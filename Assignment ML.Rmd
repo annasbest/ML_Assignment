@@ -1,0 +1,189 @@
+---
+title: "Assignment ML"
+author: "annasbest"
+date: "11/12/2022"
+output: html_document
+---
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.width = 5,
+                      fig.height = 3,
+                      fig.path = 'Figures/',
+                      echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+options(knitr.table.format = "html") 
+```
+
+## Background (from website)
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement -- a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+One thing that people regularly do is quantify how *much* of a particular activity they do, but they rarely quantify *how well they do it*. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har): (see the section on the Weight Lifting Exercise Dataset).
+
+### Data (from website)
+
+-   The training data for this project are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+-   The test data are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+-   The data for this project come from this [source](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har)
+
+### Goal (from website)
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases
+
+## Abstract/Summary
+
+Using a random forest classifier with a k-fold cross validation of 3, the optimal model has a high accuracy and an OOB rate of less than 1%. The variable importance plot shows that the pitch_forearm variable was most important in predicting the `classe` variable. Applying our model on the test set, we attain a similar accuracy.
+
+------------------------------------------------------------------------
+
+## Loading Packages & Loading Data
+
+Start by loading all packages.
+```{r}
+pacman::p_load(data.table, caret, parallel, doParallel, purrr, visdat, dplyr,
+               printr, kableExtra, corrplot, e1071, randomForest, ggplot2)
+```
+```{r}
+# training set
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+training <- fread(url_train, na.strings = c("#DIV/0", "", "NA"), stringsAsFactors = TRUE)
+    
+# testing set
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testing <- fread(url_test, na.strings = c("#DIV/0", "", "NA"), stringsAsFactors = TRUE)
+```
+
+## Data Preprocessing
+
+We'll have a look at the data. There is a total of 160 variables! Let's subset (we set a threshold for the amount of NAs a variable has in our data. I'm going to set the threshold as 70% and use the discard function from the purrr package to discard the variables)
+```{r}
+print("training")
+head(training)
+print("testing")
+head(testing)
+```
+
+```{r}
+training <- training[, -c(1:7)]
+testing <- testing[, -c(1:7)]
+
+print("Before removing:")
+rbind(training = dim(training), testing = dim(testing))
+
+# Write function to remove NA's
+na_removing <- function(data, threshold) {
+  data %>% discard(~ sum(is.na(.x)) / length(.x) * 100 > threshold)}
+
+#Apply function
+clean_train <- na_removing(training, 70)
+clean_test <- na_removing(testing, 70)
+print("After removing:")
+rbind(training = dim(clean_train),testing = dim(clean_test))
+```
+
+## Data Partition
+
+The function `createDataPartition` will be used to split the dataset right now into a ratio of 80:20. Remember to set a seed!
+
+```{r}
+set.seed(264)
+inTrain <- createDataPartition(clean_train$classe, p=0.8, list=FALSE)
+train <- clean_train[inTrain, ]
+test <- clean_train[-inTrain, ]
+```
+
+
+## Exploratory Data Analysis
+
+Let's check if there are correlated variables using the `corrplot` library. We expect that no strong correlation is visible.
+
+```{r}
+corr_data <- select_if(train, is.numeric)
+corrplot(cor(corr_data),
+    method = "color",
+    tl.pos = "n")
+```
+
+## Prediction via a Random forest Model
+
+To predict the `classe` variable in our dataset, we need a classifier model. In my case, random forest. To make it faster, we run it parallel with the `parallel` and `doParallel` packages.
+
+```{r, eval=FALSE}
+cluster <- makeCluster(detectCores() - 1) 
+registerDoParallel(cluster)
+```
+
+### Building the model
+
+The model will be trained 3 times based on the cross-validated data (k-folds method). We also set `allowParallel` as TRUE to allow for parallel processing. Set seed again.
+
+```{r eval=FALSE, warning=FALSE}
+set.seed(2936)
+# train the model
+fitControl <- trainControl(method = "cv",number = 3,allowParallel = TRUE)
+rf.fit <- train(classe ~ ., method = "rf", data = train, trControl = fitControl)
+
+# stop cluster
+stopCluster(cluster)
+registerDoSEQ()
+# save the model into an rds file to save time
+saveRDS(rf.fit,file="rfmodel.rds")
+```
+
+Let's test the performance of our model:
+
+### Model Performance
+
+```{r}
+model.rf <- readRDS(file = "rfmodel.rds")
+model.rf
+```
+
+From the results, we see that the optimal model, has an accuracy of 0.99, which is really good. The OOB is our out of sample rate, which is 0.96%. This means our accuracy is acceptable for our prediction.
+
+```{r}
+model.rf$finalModel
+```
+
+Now, we plot the error of each `classe` prediction with no. of trees. We see that as we reach around 30 trees, the OOB becomes flat, and we can use 30 as the `ntrees` for our `trcontrol` if we decide to further fine-tune our model.
+
+```{r}
+plot(model.rf$finalModel)
+```
+
+### Variable Importance and performance for predictions
+
+`VarImp` function by R tells us that from our model, the most important feature in predicting the classe variable is `pitch_forearm` 
+
+```{r fig.height=3, fig.width=5}
+importance <- varImp(model.rf, scale = FALSE)
+plot(importance, top=10)
+```
+
+Let's predict.
+```{r}
+pred.rf <- predict(model.rf, test)
+confM <- confusionMatrix(test$classe, pred.rf)
+confM$table
+confM$overall["Accuracy"]
+```
+
+We obtain an accurancy of `r confM$overall["Accuracy"]`, which means only around 1% of `classe` variables were falsely classified.
+
+## Final Prediction on Validation
+
+Finally we apply our model to the test cases given in the validation data.
+
+```{r}
+final.pred.rf <- predict(model.rf, clean_test)
+summary(final.pred.rf)
+final.pred.rf
+```
+
+## Citation
+
+[Ugulino, W.](http://groupware.les.inf.puc-rio.br/collaborator.jsf?p1=ugulino); [Cardador, D.](http://groupware.les.inf.puc-rio.br/collaborator.jsf?p1=debora); [Vega, K.](http://groupware.les.inf.puc-rio.br/collaborator.jsf?p1=katia); [Velloso, E.](http://groupware.les.inf.puc-rio.br/collaborator.jsf?p1=evelloso); Milidiu, R.; [Fuks, H.](http://groupware.les.inf.puc-rio.br/collaborator.jsf?p1=hugo) [**Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements**](http://groupware.les.inf.puc-rio.br/work.jsf?p1=10335 "Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements"). Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6.
+
